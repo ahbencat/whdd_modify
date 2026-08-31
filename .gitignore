@@ -1,2 +1,6 @@
 *.o
 version.h
+whdd
+whdd_g
+whdd-cli
+whdd_read_test_report__*
