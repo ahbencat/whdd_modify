@@ -26,7 +26,7 @@ static DC_Dev *menu_choose_device(DC_DevList *devlist);
 static DC_Procedure *menu_choose_procedure(DC_Dev *dev);
 void log_cb(void *priv, enum DC_LogLevel level, const char* fmt, va_list vl);
 
-static int ask_option_value(DC_Procedure *act, DC_OptionSetting *setting, DC_ProcedureOption *option) {
+static int ask_option_value(DC_Dev *dev, DC_Procedure *act, DC_OptionSetting *setting, DC_ProcedureOption *option) {
     int r;
     char *suggested_value = setting->value;
     char entered_value[200];
@@ -59,6 +59,9 @@ static int ask_option_value(DC_Procedure *act, DC_OptionSetting *setting, DC_Pro
     char prompt[500];
     snprintf(prompt, sizeof(prompt), "Please enter %s parameter: %s (%s)",
             param_type_str, option->name, option->help);
+    if (option->choices)
+        snprintf(prompt + strlen(prompt), sizeof(prompt) - strlen(prompt),
+                "\nPress Space to select a choice, then Enter to confirm.");
 
     dialog_vars.default_button = -1;  // Workaround for surprisingly unfocused input field on old libdialog
     dialog_vars.input_result = NULL;
@@ -73,10 +76,15 @@ static int ask_option_value(DC_Procedure *act, DC_OptionSetting *setting, DC_Pro
         int items_table_cols = 2;
         assert(dialog_vars.no_items == true); // otherwise one more quasi-column "item"
         assert(dialog_vars.item_help == false); // otherwise one more quasi-column "help" which goes last
-        for (nb_choices = 0; choice = option->choices[nb_choices]; nb_choices++) {
+        int src_i;
+        for (src_i = 0; choice = option->choices[src_i]; src_i++) {
+            // Don't offer "ata" API choice on non-ATA-capable devices
+            if (!strcmp(choice, "ata") && !dev->ata_capable)
+                continue;
             choices_for_dialog = reallocarray(choices_for_dialog, items_table_cols * (nb_choices + 1), sizeof(char*));
             choices_for_dialog[items_table_cols * nb_choices + 0] = choice;
             choices_for_dialog[items_table_cols * nb_choices + 1] = !strcmp(choice, suggested_value)  ? "on" : "off";
+            nb_choices++;
         }
         r = dialog_checklist("Input box", prompt, /*height*/0, /*width*/0, /*list_height*/0, nb_choices, /*char **items*/(char **)choices_for_dialog, /*flag*/FLAG_RADIO);
     } else {
@@ -144,7 +152,7 @@ int main() {
                 dc_log(DC_LOG_ERROR, "Failed to get default value suggestion on '%s'", option_set[i].name);
                 break;
             }
-            r = ask_option_value(act, &option_set[i], &act->options[i]);
+            r = ask_option_value(chosen_dev, act, &option_set[i], &act->options[i]);
             if (r)
                 break;
         }
