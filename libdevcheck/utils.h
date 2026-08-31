@@ -22,6 +22,10 @@ int dc_realtime_scheduling_enable_with_prio(int prio);
 
 char *dc_dev_smartctl_text(char *dev_fs_path, char *options);
 
+/* Extract a field value from smartctl -i output (e.g. "Serial number").
+ * Returns 1 on success. */
+int dc_dev_smartctl_get_str(char *dev_fs_path, const char *field, char *dst, int dstsize);
+
 char *commaprint(uint64_t n, char *retbuf, size_t bufsize);
 
 int procedure_perform_until_interrupt(DC_ProcedureCtx *actctx,

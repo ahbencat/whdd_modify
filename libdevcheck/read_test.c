@@ -37,10 +37,59 @@ struct read_priv {
     uint64_t total_access_time;  // in mcs
     int64_t first_error_lba;
     int64_t last_error_lba;
+    // DiskGenius-style defect intervals: contiguous LBA ranges by severity
+    struct dg_interval {
+        int64_t begin_lba;
+        int64_t end_lba;  // LBA of last sector of the range, inclusive
+        int type;  // 1 = severe (slow, >500ms), 2 = damaged (read error)
+    } *dg_intervals;
+    int nb_dg_intervals;
+    int64_t dg_cur_begin;
+    int64_t dg_cur_end;
+    int dg_cur_type;  // 0 = no open interval, else as in dg_interval.type
 };
 typedef struct read_priv ReadPriv;
 
 #define DEFAULT_SECTORS_AT_ONCE 256
+
+// Contiguity-checked interval bookkeeping for the defect-list report.
+// Slow-but-OK blocks (>500ms) are "severe", read errors are "damaged";
+// damaged wins when a block is both.
+static void dg_interval_update(ReadPriv *priv, int64_t lba, int64_t end_lba, int type) {
+    if (type) {
+        if ((priv->dg_cur_type == type) && (lba == priv->dg_cur_end + 1)) {
+            priv->dg_cur_end = end_lba;
+            return;
+        }
+        if (priv->dg_cur_type)
+            goto flush;
+        priv->dg_cur_begin = lba;
+        priv->dg_cur_end = end_lba;
+        priv->dg_cur_type = type;
+        return;
+    }
+    if (priv->dg_cur_type)
+        goto flush;
+    return;
+flush:
+    {
+        void *p = realloc(priv->dg_intervals,
+                (priv->nb_dg_intervals + 1) * sizeof(*priv->dg_intervals));
+        if (!p)
+            return;
+        priv->dg_intervals = p;
+        priv->dg_intervals[priv->nb_dg_intervals].begin_lba = priv->dg_cur_begin;
+        priv->dg_intervals[priv->nb_dg_intervals].end_lba = priv->dg_cur_end;
+        priv->dg_intervals[priv->nb_dg_intervals].type = priv->dg_cur_type;
+        priv->nb_dg_intervals++;
+        priv->dg_cur_type = 0;
+        if (type) {
+            priv->dg_cur_begin = lba;
+            priv->dg_cur_end = end_lba;
+            priv->dg_cur_type = type;
+        }
+    }
+}
 
 static int SuggestDefaultValue(DC_Dev *dev, DC_OptionSetting *setting) {
     (void)dev;
@@ -184,6 +233,15 @@ static int Perform(DC_ProcedureCtx *ctx) {
     // Report accumulators
     priv->blocks_processed++;
     priv->total_access_time += ctx->report.blk_access_time;
+    {
+        int64_t block_end_lba = ctx->report.lba + ctx->report.sectors_processed - 1;
+        int dg_type = 0;
+        if (ctx->report.blk_status)
+            dg_type = 2;  // damaged
+        else if (ctx->report.blk_access_time >= 500000)  // >500ms
+            dg_type = 1;  // severe
+        dg_interval_update(priv, ctx->report.lba, block_end_lba, dg_type);
+    }
     if (ctx->report.blk_status) {
         priv->error_stats[ctx->report.blk_status]++;
         priv->blocks_with_errors++;
@@ -227,6 +285,8 @@ static void write_report(DC_ProcedureCtx *ctx) {
     fprintf(f, "Time: %s\n", timestamp);
     fprintf(f, "Device: %s (%s)\n", ctx->dev->dev_path,
             ctx->dev->model_str ? ctx->dev->model_str : "unknown model");
+    fprintf(f, "Serial number: %s\n",
+            ctx->dev->serial_no ? ctx->dev->serial_no : "unknown");
     fprintf(f, "API: %s\n", priv->api_str);
     fprintf(f, "Block size: %" PRIu64 " bytes (%" PRId64 " sectors)\n",
             ctx->blk_size, priv->sectors_at_once);
@@ -264,9 +324,67 @@ static void write_report(DC_ProcedureCtx *ctx) {
     dc_log(DC_LOG_INFO, "Report written to '%s'", priv->report_file);
 }
 
+static void write_dg_report(DC_ProcedureCtx *ctx) {
+    ReadPriv *priv = ctx->priv;
+    FILE *f;
+    char path[4096];
+
+    if (!priv->report_file || !strcmp(priv->report_file, "none"))
+        return;
+
+    // Flush the interval being accumulated when the scan ended
+    if (priv->dg_cur_type)
+        dg_interval_update(priv, 0, -1, 0);
+
+    snprintf(path, sizeof(path), "%s.dg", priv->report_file);
+    f = fopen(path, "w");
+    if (!f) {
+        dc_log(DC_LOG_ERROR, "Cannot open defect list file '%s'", path);
+        return;
+    }
+
+    fprintf(f, "WHDD read test defect list (DiskGenius-style)\n");
+    {
+        int i;
+        uint64_t severe_count = 0, damaged_count = 0;
+        for (i = 0; i < priv->nb_dg_intervals; i++) {
+            uint64_t sectors = priv->dg_intervals[i].end_lba - priv->dg_intervals[i].begin_lba + 1;
+            if (priv->dg_intervals[i].type == 1)
+                severe_count += sectors;
+            else
+                damaged_count += sectors;
+        }
+        fprintf(f, "Device: %s (%s)\n", ctx->dev->dev_path,
+                ctx->dev->model_str ? ctx->dev->model_str : "unknown model");
+        fprintf(f, "Serial number: %s\n",
+                ctx->dev->serial_no ? ctx->dev->serial_no : "unknown");
+        fprintf(f, "Scanned range: LBA %" PRId64 " .. %" PRId64 "\n",
+                priv->start_lba, priv->end_lba - 1);
+        fprintf(f, "\n");
+        fprintf(f, "Severe (slow blocks, >=500ms): %" PRIu64 " sectors\n", severe_count);
+        fprintf(f, "Damaged (read errors): %" PRIu64 " sectors\n", damaged_count);
+        fprintf(f, "\n");
+        fprintf(f, "Type     LBA begin       LBA end         Sectors\n");
+        for (i = 0; i < priv->nb_dg_intervals; i++) {
+            uint64_t sectors = priv->dg_intervals[i].end_lba - priv->dg_intervals[i].begin_lba + 1;
+            fprintf(f, "%-8s %15" PRId64 " %15" PRId64 " %13" PRIu64 "\n",
+                    priv->dg_intervals[i].type == 1 ? "severe" : "damaged",
+                    priv->dg_intervals[i].begin_lba,
+                    priv->dg_intervals[i].end_lba,
+                    sectors);
+        }
+        if (!priv->nb_dg_intervals)
+            fprintf(f, "(no defective blocks found)\n");
+    }
+    fclose(f);
+    dc_log(DC_LOG_INFO, "Defect list written to '%s'", path);
+}
+
 static void Close(DC_ProcedureCtx *ctx) {
     ReadPriv *priv = ctx->priv;
     write_report(ctx);
+    write_dg_report(ctx);
+    free(priv->dg_intervals);
     int r = ioctl(priv->fd, BLKRASET, priv->old_readahead);
     if (r == -1)
       dc_log(DC_LOG_WARNING, "Restoring block device readahead setting failed\n");

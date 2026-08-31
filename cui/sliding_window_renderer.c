@@ -247,9 +247,13 @@ static int Open(DC_RendererCtx *ctx) {
     wnoutrefresh(priv->w_end_lba);
     wprintw(priv->summary,
             "%s %s\n"
+            "%s S/N %s\n"
             "Block = %" PRIu64 " bytes\n"
             "Ctrl+C to abort\n",
-            actctx->procedure->display_name, actctx->dev->dev_path, actctx->blk_size);
+            actctx->procedure->display_name, actctx->dev->dev_path,
+            actctx->dev->model_str ? actctx->dev->model_str : "unknown model",
+            actctx->dev->serial_no ? actctx->dev->serial_no : "unknown serial",
+            actctx->blk_size);
     wrefresh(priv->summary);
     int r = pthread_create(&priv->render_thread, NULL, render_thread_proc, priv);
     if (r)

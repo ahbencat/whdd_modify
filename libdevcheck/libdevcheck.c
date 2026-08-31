@@ -171,8 +171,30 @@ static void dev_list_fill_info(DC_DevList *list) {
             // for (int i = 0; i < 512; i++)
             //     fprintf(stderr, "%c", dev->identify[i]);
         }
+        if (!dev->model_str) {
+            // ATA path failed - try smartctl (works for SAS/SCSI and others)
+            char model[81];
+            int ret;
+            if (dc_dev_smartctl_get_str(dev->dev_path, "Vendor:", model, sizeof(model))) {
+                // SAS/SCSI: combine Vendor + Product
+                char product[81];
+                if (dc_dev_smartctl_get_str(dev->dev_path, "Product:", product, sizeof(product)))
+                    ret = asprintf(&dev->model_str, "%s %s", model, product);
+                else
+                    ret = asprintf(&dev->model_str, "%s", model);
+                assert(ret != -1 && dev->model_str);
+            }
+        }
         if (!dev->model_str)
             dev_modelname_fill(dev);
+        if (!dev->serial_no) {
+            // ATA path failed or non-ATA - try smartctl
+            char serial[81];
+            if (dc_dev_smartctl_get_str(dev->dev_path, "Serial number:", serial, sizeof(serial))) {
+                dev->serial_no = strdup(serial);
+                assert(dev->serial_no);
+            }
+        }
         dev_mounted_fill(dev);
         dev = dev->next;
     }

@@ -92,6 +92,36 @@ char *dc_dev_smartctl_text(char *dev_fs_path, char *options) {
     return smartctl_output;
 }
 
+/* Parse a smartctl -i "Field: value" line into dst (trailing space stripped).
+ * Returns 1 if found. */
+int dc_dev_smartctl_get_str(char *dev_fs_path, const char *field, char *dst, int dstsize) {
+    char *text = dc_dev_smartctl_text(dev_fs_path, " -i ");
+    if (!text)
+        return 0;
+    char *line = text;
+    int found = 0;
+    while (line) {
+        char *eol = strchr(line, '\n');
+        if (eol)
+            *eol = '\0';
+        if (!strncmp(line, field, strlen(field))) {
+            char *value = line + strlen(field);
+            while (*value == ' ')
+                value++;
+            snprintf(dst, dstsize, "%s", value);
+            // Strip trailing spaces
+            int len = strlen(dst);
+            while (len > 0 && dst[len-1] == ' ')
+                dst[--len] = '\0';
+            found = 1;
+            break;
+        }
+        line = eol ? eol + 1 : NULL;
+    }
+    free(text);
+    return found;
+}
+
 char *commaprint(uint64_t n, char *retbuf, size_t bufsize) {
     static int comma = ',';
     char *p = &retbuf[bufsize-1];
