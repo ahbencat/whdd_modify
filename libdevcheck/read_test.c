@@ -14,6 +14,7 @@
 #include "procedure.h"
 #include "ata.h"
 #include "scsi.h"
+#include "utils.h"
 
 struct read_priv {
     const char *api_str;
@@ -30,7 +31,8 @@ struct read_priv {
     int old_readahead;
     uint64_t current_lba;
     // Report accumulators
-    uint64_t access_time_stats[6];  // same thresholds as cui/vis.c bs_vis[]
+    uint64_t vis_thresholds[DC_VIS_THRESHOLD_COUNT];  // filled in Open() from sectors_at_once
+    uint64_t access_time_stats[DC_VIS_THRESHOLD_COUNT + 1];  // one bucket per tier, last is >= top threshold
     uint64_t error_stats[7];  // 0th is unused, the rest are as in DC_BlockStatus enum
     uint64_t blocks_processed;
     uint64_t blocks_with_errors;
@@ -107,8 +109,7 @@ static int SuggestDefaultValue(DC_Dev *dev, DC_OptionSetting *setting) {
         setting->value = string;
     } else if (!strcmp(setting->name, "report_file")) {
         char *string;
-        int r = asprintf(&string, "whdd_read_test_report__%s__%s",
-                dev->model_str ? dev->model_str : "unknown",
+        int r = asprintf(&string, "whdd_read_test_%s",
                 dev->serial_no ? dev->serial_no : "unknown");
         assert(r != -1);
         setting->value = string;
@@ -135,6 +136,7 @@ static int Open(DC_ProcedureCtx *ctx) {
     if (priv->sectors_at_once <= 0)
         return 1;
     priv->first_error_lba = -1;
+    dc_get_vis_thresholds(priv->sectors_at_once, priv->vis_thresholds);
     ctx->blk_size = priv->sectors_at_once * 512;
     priv->current_lba = priv->start_lba;
     priv->end_lba = ctx->dev->capacity / 512;
@@ -238,7 +240,7 @@ static int Perform(DC_ProcedureCtx *ctx) {
         int dg_type = 0;
         if (ctx->report.blk_status)
             dg_type = 2;  // damaged
-        else if (ctx->report.blk_access_time >= 500000)  // >500ms
+        else if (ctx->report.blk_access_time >= priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 1])
             dg_type = 1;  // severe
         dg_interval_update(priv, ctx->report.lba, block_end_lba, dg_type);
     }
@@ -249,10 +251,9 @@ static int Perform(DC_ProcedureCtx *ctx) {
             priv->first_error_lba = ctx->report.lba;
         priv->last_error_lba = ctx->report.lba + ctx->report.sectors_processed - 1;
     } else {
-        static const uint64_t vis_thresholds[6] = {3000, 10000, 50000, 150000, 500000, 0};
         int i;
-        for (i = 0; i < 5; i++)
-            if (ctx->report.blk_access_time < vis_thresholds[i])
+        for (i = 0; i < DC_VIS_THRESHOLD_COUNT; i++)
+            if (ctx->report.blk_access_time < priv->vis_thresholds[i])
                 break;
         priv->access_time_stats[i]++;
     }
@@ -266,13 +267,15 @@ static void write_report(DC_ProcedureCtx *ctx) {
     time_t now;
     struct tm tm_buf;
     char timestamp[40];
+    char path[4096];
 
     if (!priv->report_file || !strcmp(priv->report_file, "none"))
         return;
 
-    f = fopen(priv->report_file, "w");
+    snprintf(path, sizeof(path), "%s.report", priv->report_file);
+    f = fopen(path, "w");
     if (!f) {
-        dc_log(DC_LOG_ERROR, "Cannot open report file '%s'", priv->report_file);
+        dc_log(DC_LOG_ERROR, "Cannot open report file '%s'", path);
         return;
     }
 
@@ -303,12 +306,12 @@ static void write_report(DC_ProcedureCtx *ctx) {
     }
     fprintf(f, "Blocks with errors: %" PRIu64 "\n", priv->blocks_with_errors);
     fprintf(f, "Blocks OK by access time:\n");
-    fprintf(f, "  <3ms    : %" PRIu64 "\n", priv->access_time_stats[0]);
-    fprintf(f, "  <10ms   : %" PRIu64 "\n", priv->access_time_stats[1]);
-    fprintf(f, "  <50ms   : %" PRIu64 "\n", priv->access_time_stats[2]);
-    fprintf(f, "  <150ms  : %" PRIu64 "\n", priv->access_time_stats[3]);
-    fprintf(f, "  <500ms  : %" PRIu64 "\n", priv->access_time_stats[4]);
-    fprintf(f, "  >500ms  : %" PRIu64 "\n", priv->access_time_stats[5]);
+    for (int i = 0; i < DC_VIS_THRESHOLD_COUNT; i++)
+        fprintf(f, "  <%" PRIu64 "ms   : %" PRIu64 "\n",
+                priv->vis_thresholds[i] / 1000, priv->access_time_stats[i]);
+    fprintf(f, "  >=%" PRIu64 "ms  : %" PRIu64 "\n",
+            priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 1] / 1000,
+            priv->access_time_stats[DC_VIS_THRESHOLD_COUNT]);
     fprintf(f, "Blocks by error type:\n");
     fprintf(f, "  Error   : %" PRIu64 "\n", priv->error_stats[DC_BlockStatus_eError]);
     fprintf(f, "  Timeout : %" PRIu64 "\n", priv->error_stats[DC_BlockStatus_eTimeout]);
@@ -321,7 +324,7 @@ static void write_report(DC_ProcedureCtx *ctx) {
                 priv->first_error_lba, priv->last_error_lba);
 
     fclose(f);
-    dc_log(DC_LOG_INFO, "Report written to '%s'", priv->report_file);
+    dc_log(DC_LOG_INFO, "Report written to '%s'", path);
 }
 
 static void write_dg_report(DC_ProcedureCtx *ctx) {
@@ -361,7 +364,8 @@ static void write_dg_report(DC_ProcedureCtx *ctx) {
         fprintf(f, "Scanned range: LBA %" PRId64 " .. %" PRId64 "\n",
                 priv->start_lba, priv->end_lba - 1);
         fprintf(f, "\n");
-        fprintf(f, "Severe (slow blocks, >=500ms): %" PRIu64 " sectors\n", severe_count);
+        fprintf(f, "Severe (slow blocks, >=%" PRIu64 "ms): %" PRIu64 " sectors\n",
+                priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 1] / 1000, severe_count);
         fprintf(f, "Damaged (read errors): %" PRIu64 " sectors\n", damaged_count);
         fprintf(f, "\n");
         fprintf(f, "Type     LBA begin       LBA end         Sectors\n");

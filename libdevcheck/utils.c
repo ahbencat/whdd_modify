@@ -368,3 +368,16 @@ void dc_ata_ascii_to_c_string(uint8_t *ata_ascii_string, unsigned int ata_length
         *dst = '\0';
     }
 }
+
+void dc_get_vis_thresholds(int sectors_at_once, uint64_t out[DC_VIS_THRESHOLD_COUNT]) {
+    /* Base thresholds (in microseconds) calibrated for 256-sector blocks
+     * (i.e. 128 KiB). The MHDD-equivalent tiers are <3, <10, <50, <150,
+     * <500 ms. Scaling linearly with sectors_at_once keeps the per-byte
+     * rate mapping constant across block sizes. */
+    static const uint64_t base[DC_VIS_THRESHOLD_COUNT] = {
+        3000, 10000, 50000, 150000, 500000
+    };
+    int i;
+    for (i = 0; i < DC_VIS_THRESHOLD_COUNT; i++)
+        out[i] = base[i] * (uint64_t)sectors_at_once / 256;
+}

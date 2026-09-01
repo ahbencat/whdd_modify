@@ -26,6 +26,7 @@ extern vis_t exceed_vis;
 extern vis_t error_vis[]; // 0th is unused, rest go as in enum
 
 void init_my_colors(void);
+void vis_set_block_size(int sectors_at_once);
 vis_t choose_vis(uint64_t access_time);
 void print_vis(WINDOW *win, vis_t vis);
 void show_legend(WINDOW *win);

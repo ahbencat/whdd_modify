@@ -45,4 +45,12 @@ int dc_dev_ata_capable(char *dev_fs_path);
 int dc_dev_ata_identify(char *dev_fs_path, uint8_t identify[512]);
 
 void dc_ata_ascii_to_c_string(uint8_t *ata_ascii_string, unsigned int ata_length_in_words, char *dst);
+
+/* Fill out[5] with the per-block access-time thresholds (in microseconds)
+ * for a read block of sectors_at_once sectors. Base thresholds are
+ * calibrated for 256-sector blocks; values scale linearly so that a region
+ * of constant per-byte rate shows the same color regardless of block size.
+ */
+#define DC_VIS_THRESHOLD_COUNT 5
+void dc_get_vis_thresholds(int sectors_at_once, uint64_t out[DC_VIS_THRESHOLD_COUNT]);
 #endif // LIBDEVCHECK_UTILS_H

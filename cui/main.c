@@ -186,6 +186,8 @@ int main() {
             renderer = dc_find_renderer("whole_space");
         else
             renderer = dc_find_renderer("sliding_window");
+        // Must run before renderer Open() draws legends from bs_vis[]
+        vis_set_block_size(actctx->blk_size / 512);
         render_procedure(actctx, renderer);
     } // while(1)
 
