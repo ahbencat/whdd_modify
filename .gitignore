@@ -3,4 +3,4 @@ version.h
 whdd
 whdd_g
 whdd-cli
-whdd_read_test_*
+WHDD_REPORT_*

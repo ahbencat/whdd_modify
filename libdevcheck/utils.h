@@ -53,4 +53,7 @@ void dc_ata_ascii_to_c_string(uint8_t *ata_ascii_string, unsigned int ata_length
  */
 #define DC_VIS_THRESHOLD_COUNT 5
 void dc_get_vis_thresholds(int sectors_at_once, uint64_t out[DC_VIS_THRESHOLD_COUNT]);
+
+/* Replace anything unsafe for a filename component with '_'. */
+void dc_sanitize_for_filename(char *s);
 #endif // LIBDEVCHECK_UTILS_H

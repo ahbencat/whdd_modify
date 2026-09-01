@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <assert.h>
 #include <errno.h>
 #include <signal.h>
@@ -380,4 +381,10 @@ void dc_get_vis_thresholds(int sectors_at_once, uint64_t out[DC_VIS_THRESHOLD_CO
     int i;
     for (i = 0; i < DC_VIS_THRESHOLD_COUNT; i++)
         out[i] = base[i] * (uint64_t)sectors_at_once / 256;
+}
+
+void dc_sanitize_for_filename(char *s) {
+    for (; *s; s++)
+        if (!isalnum((unsigned char)*s) && *s != '_' && *s != '-')
+            *s = '_';
 }

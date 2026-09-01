@@ -54,6 +54,25 @@ typedef struct read_priv ReadPriv;
 
 #define DEFAULT_SECTORS_AT_ONCE 256
 
+/* Build the default report basename:
+ *   WHDD_REPORT_<serial>_<YYMMDD>_<HHMMSS>
+ * Serial is device-supplied data, so it is sanitized; result is malloc'd. */
+static char *make_default_report_basename(DC_Dev *dev, time_t now) {
+    struct tm tm_buf;
+    char ts[32];
+    char serial[128];
+    char *result;
+    int r;
+    localtime_r(&now, &tm_buf);
+    strftime(ts, sizeof(ts), "%y%m%d_%H%M%S", &tm_buf);
+    snprintf(serial, sizeof(serial), "%s",
+             dev->serial_no ? dev->serial_no : "unknown");
+    dc_sanitize_for_filename(serial);
+    r = asprintf(&result, "WHDD_REPORT_%s_%s", serial, ts);
+    assert(r != -1);
+    return result;
+}
+
 // Contiguity-checked interval bookkeeping for the defect-list report.
 // Slow-but-OK blocks (>500ms) are "severe", read errors are "damaged";
 // damaged wins when a block is both.
@@ -108,11 +127,7 @@ static int SuggestDefaultValue(DC_Dev *dev, DC_OptionSetting *setting) {
         assert(r != -1);
         setting->value = string;
     } else if (!strcmp(setting->name, "report_file")) {
-        char *string;
-        int r = asprintf(&string, "whdd_read_test_%s",
-                dev->serial_no ? dev->serial_no : "unknown");
-        assert(r != -1);
-        setting->value = string;
+        setting->value = make_default_report_basename(dev, time(NULL));
     } else {
         return 1;
     }
@@ -137,6 +152,13 @@ static int Open(DC_ProcedureCtx *ctx) {
         return 1;
     priv->first_error_lba = -1;
     dc_get_vis_thresholds(priv->sectors_at_once, priv->vis_thresholds);
+    // Auto-save: normalize an empty or "none" report_file into a
+    // timestamped basename so the reports are always written.
+    if (!priv->report_file || !priv->report_file[0]
+            || !strcmp(priv->report_file, "none")) {
+        free((void *)priv->report_file);
+        priv->report_file = make_default_report_basename(ctx->dev, time(NULL));
+    }
     ctx->blk_size = priv->sectors_at_once * 512;
     priv->current_lba = priv->start_lba;
     priv->end_lba = ctx->dev->capacity / 512;
@@ -269,9 +291,6 @@ static void write_report(DC_ProcedureCtx *ctx) {
     char timestamp[40];
     char path[4096];
 
-    if (!priv->report_file || !strcmp(priv->report_file, "none"))
-        return;
-
     snprintf(path, sizeof(path), "%s.report", priv->report_file);
     f = fopen(path, "w");
     if (!f) {
@@ -331,9 +350,6 @@ static void write_dg_report(DC_ProcedureCtx *ctx) {
     ReadPriv *priv = ctx->priv;
     FILE *f;
     char path[4096];
-
-    if (!priv->report_file || !strcmp(priv->report_file, "none"))
-        return;
 
     // Flush the interval being accumulated when the scan ended
     if (priv->dg_cur_type)
@@ -402,7 +418,7 @@ static DC_ProcedureOption options[] = {
     { "api", "select operation API: \"posix\" for POSIX read(), \"ata\" for ATA \"READ VERIFY EXT\" command", offsetof(ReadPriv, api_str), DC_ProcedureOptionType_eString, api_choices },
     { "start_lba", "set LBA address to begin from", offsetof(ReadPriv, start_lba), DC_ProcedureOptionType_eInt64 },
     { "sectors_at_once", "sectors per block: 256=128KB, 1024=512KB, 4096=2MB", offsetof(ReadPriv, sectors_at_once), DC_ProcedureOptionType_eInt64, sectors_choices },
-    { "report_file", "path of summary report file, or \"none\" to disable", offsetof(ReadPriv, report_file), DC_ProcedureOptionType_eString },
+    { "report_file", "basename for the two report files (saved as <name>.report and <name>.dg). Leave empty for an auto-generated timestamped name.", offsetof(ReadPriv, report_file), DC_ProcedureOptionType_eString },
     { NULL }
 };
 
