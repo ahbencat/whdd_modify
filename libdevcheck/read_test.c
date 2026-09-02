@@ -343,7 +343,6 @@ static void write_report(DC_ProcedureCtx *ctx) {
                 priv->first_error_lba, priv->last_error_lba);
 
     fclose(f);
-    dc_log(DC_LOG_INFO, "Report written to '%s'", path);
 }
 
 static void write_dg_report(DC_ProcedureCtx *ctx) {
@@ -397,7 +396,6 @@ static void write_dg_report(DC_ProcedureCtx *ctx) {
             fprintf(f, "(no defective blocks found)\n");
     }
     fclose(f);
-    dc_log(DC_LOG_INFO, "Defect list written to '%s'", path);
 }
 
 static void Close(DC_ProcedureCtx *ctx) {
