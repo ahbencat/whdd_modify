@@ -3,6 +3,8 @@
 #include <curses.h>
 #include <dialog.h>
 #include <assert.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #include "render.h"
 #include "utils.h"
@@ -46,6 +48,7 @@ typedef struct {
 
     pthread_t render_thread;
     int order_hangup; // if interrupted or completed, render remainings and end render thread
+    int layout_ok;    // 1 = paint; 0 = terminal smaller than the fixed layout, drawing paused
 
     // lockless ringbuffer
     blk_report_t reports[100*1000];
@@ -131,15 +134,31 @@ static void render_queued(WholeSpace *priv) {
         update_blocks_info(priv, cur_rep);
         queue_length--;
     }
+    if (!priv->layout_ok) {
+        werase(stdscr);
+        mvwprintw(stdscr, 0, 0, "Terminal too small (%dx%d, need >= %dx%d). Enlarge the window to resume drawing.", COLS, LINES, RENDER_COLS, RENDER_ROWS);
+        doupdate();
+        return;
+    }
     render_update_stats(priv);
     render_map(priv);
     doupdate();
 }
 
 static void *render_thread_proc(void *arg) {
-    WholeSpace *priv = arg;
+    DC_RendererCtx *ctx = arg;
+    WholeSpace *priv = ctx->priv;
     // TODO block signals in priv thread
     while (!priv->order_hangup) {
+        if (render_sigwinch_caught()) {
+            // The layout is fixed and top-left anchored, so a resize never
+            // requires re-layout: just stop painting while the terminal is
+            // smaller than the fixed geometry (writes into a smaller tty
+            // would wrap and garble the screen).
+            struct winsize ws;
+            priv->layout_ok = !ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws)
+                && ws.ws_row >= RENDER_ROWS && ws.ws_col >= RENDER_COLS;
+        }
         render_queued(priv);
         usleep(40000);  // 25 Hz
     }
@@ -169,7 +188,8 @@ static void update_blocks_info(WholeSpace *priv, blk_report_t *rep) {
         priv->read_ok_count += rep->report.sectors_processed;
     }
     priv->unread_count -= rep->report.sectors_processed;
-    wnoutrefresh(priv->vis);
+    if (priv->layout_ok)
+        wnoutrefresh(priv->vis);
 }
 
 static void render_update_stats(WholeSpace *priv) {
@@ -265,7 +285,10 @@ static int Open(DC_RendererCtx *ctx) {
     WholeSpace *priv = ctx->priv;
     DC_ProcedureCtx *actctx = ctx->procedure_ctx;
 
-    if (require_terminal_size(25, 80))
+    /* The layout is fixed, sized for a 1024x768 screen (see RENDER_*), and
+     * anchored to the top-left corner; it never adapts to LINES/COLS, so a
+     * terminal resize cannot garble it. */
+    if (require_terminal_size(RENDER_ROWS, RENDER_COLS))
         return -1;
 
     priv->nb_blocks = actctx->dev->capacity / actctx->blk_size;
@@ -315,39 +338,39 @@ static int Open(DC_RendererCtx *ctx) {
 #define LEGEND_HEIGHT 9
 #define LEGEND_VERT_OFFSET 3 /* ETA & SPEED are above, 1 for spacing */
 
-    priv->w_cur_lba = derwin(stdscr, 1, LBA_WIDTH, 0 /* at the top */, COLS - LEGEND_WIDTH - 1 - (LBA_WIDTH * 2) );
+    priv->w_cur_lba = derwin(stdscr, 1, LBA_WIDTH, 0 /* at the top */, RENDER_COLS - LEGEND_WIDTH - 1 - (LBA_WIDTH * 2) );
     assert(priv->w_cur_lba);
     wbkgd(priv->w_cur_lba, COLOR_PAIR(MY_COLOR_GRAY));
 
-    priv->w_end_lba = derwin(stdscr, 1, LBA_WIDTH, 0 /* at the top */, COLS - LEGEND_WIDTH - 1 - LBA_WIDTH);
+    priv->w_end_lba = derwin(stdscr, 1, LBA_WIDTH, 0 /* at the top */, RENDER_COLS - LEGEND_WIDTH - 1 - LBA_WIDTH);
     assert(priv->w_end_lba);
     wbkgd(priv->w_end_lba, COLOR_PAIR(MY_COLOR_GRAY));
 
-    priv->eta = derwin(stdscr, 1, LEGEND_WIDTH, 0 /* at the top */, COLS-LEGEND_WIDTH);
+    priv->eta = derwin(stdscr, 1, LEGEND_WIDTH, 0 /* at the top */, RENDER_COLS-LEGEND_WIDTH);
     assert(priv->eta);
     wbkgd(priv->eta, COLOR_PAIR(MY_COLOR_GRAY));
 
-    priv->avg_speed = derwin(stdscr, 1, LEGEND_WIDTH, 1 /* ETA is above */, COLS-LEGEND_WIDTH);
+    priv->avg_speed = derwin(stdscr, 1, LEGEND_WIDTH, 1 /* ETA is above */, RENDER_COLS-LEGEND_WIDTH);
     assert(priv->avg_speed);
     wbkgd(priv->avg_speed, COLOR_PAIR(MY_COLOR_GRAY));
 
-    priv->legend = derwin(stdscr, LEGEND_HEIGHT, LEGEND_WIDTH, LEGEND_VERT_OFFSET, COLS-LEGEND_WIDTH);
+    priv->legend = derwin(stdscr, LEGEND_HEIGHT, LEGEND_WIDTH, LEGEND_VERT_OFFSET, RENDER_COLS-LEGEND_WIDTH);
     assert(priv->legend);
     wbkgd(priv->legend, COLOR_PAIR(MY_COLOR_GRAY));
 
 #define W_STATS_HEIGHT 3
 #define W_STATS_VERT_OFFSET ( LEGEND_VERT_OFFSET + LEGEND_HEIGHT + 1 /* spacing */ )
-    priv->w_stats = derwin(stdscr, W_STATS_HEIGHT, LEGEND_WIDTH, W_STATS_VERT_OFFSET, COLS-LEGEND_WIDTH);
+    priv->w_stats = derwin(stdscr, W_STATS_HEIGHT, LEGEND_WIDTH, W_STATS_VERT_OFFSET, RENDER_COLS-LEGEND_WIDTH);
     assert(priv->w_stats);
 
 #define SUMMARY_VERT_OFFSET ( W_STATS_VERT_OFFSET + W_STATS_HEIGHT + 1 /* spacing */ )
-#define SUMMARY_HEIGHT ( LINES - SUMMARY_VERT_OFFSET - 1 /* don't touch bottom line */ )
-    priv->summary = derwin(stdscr, SUMMARY_HEIGHT, LEGEND_WIDTH, SUMMARY_VERT_OFFSET, COLS-LEGEND_WIDTH);
+#define SUMMARY_HEIGHT ( RENDER_ROWS - SUMMARY_VERT_OFFSET - 1 /* don't touch the fixed area's bottom line */ )
+    priv->summary = derwin(stdscr, SUMMARY_HEIGHT, LEGEND_WIDTH, SUMMARY_VERT_OFFSET, RENDER_COLS-LEGEND_WIDTH);
     assert(priv->summary);
     wbkgd(priv->summary, COLOR_PAIR(MY_COLOR_GRAY));
 
-    priv->vis_height = LINES - 2; /* LBA is above, version is below */
-    priv->vis_width = COLS - LEGEND_WIDTH - 1;
+    priv->vis_height = RENDER_ROWS - 2; /* LBA is above, version is below */
+    priv->vis_width = RENDER_COLS - LEGEND_WIDTH - 1;
     int vis_cells_avail = priv->vis_height * priv->vis_width;
     priv->blocks_per_vis = priv->nb_blocks / vis_cells_avail;
     if (priv->nb_blocks % vis_cells_avail)
@@ -359,6 +382,7 @@ static int Open(DC_RendererCtx *ctx) {
     whole_space_show_legend(priv);
 
     priv->reports[0].seqno = 1; // anything but zero
+    priv->layout_ok = 1;
 
     char comma_lba_buf[30], *comma_lba_p;
     comma_lba_p = commaprint(actctx->dev->capacity / 512, comma_lba_buf, sizeof(comma_lba_buf));
@@ -369,7 +393,7 @@ static int Open(DC_RendererCtx *ctx) {
             "Ctrl+C to abort\n",
             actctx->procedure->display_name, actctx->dev->dev_path);
     wrefresh(priv->summary);
-    int r = pthread_create(&priv->render_thread, NULL, render_thread_proc, priv);
+    int r = pthread_create(&priv->render_thread, NULL, render_thread_proc, ctx);
     if (r)
         return r; // FIXME leak
     return 0;

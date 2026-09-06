@@ -3,6 +3,8 @@
 #include <curses.h>
 #include <dialog.h>
 #include <assert.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #include "render.h"
 #include "utils.h"
@@ -37,6 +39,7 @@ typedef struct {
 
     pthread_t render_thread;
     int order_hangup; // if interrupted or completed, render remainings and end render thread
+    int layout_ok;    // windows valid; 0 = terminal too small, drawing paused
 
     // lockless ringbuffer
     blk_report_t reports[100*1000];
@@ -90,15 +93,31 @@ static void render_queued(SlidingWindow *priv) {
         render_update_vis(priv, cur_rep);
         queue_length--;
     }
+    if (!priv->layout_ok) {
+        werase(stdscr);
+        mvwprintw(stdscr, 0, 0, "Terminal too small (%dx%d, need >= 25x80). Enlarge the window to restore the layout.", COLS, LINES);
+        doupdate();
+        return;
+    }
     render_update_stats(priv);
     wnoutrefresh(priv->vis);
     doupdate();
 }
 
 static void *render_thread_proc(void *arg) {
-    SlidingWindow *priv = arg;
+    DC_RendererCtx *ctx = arg;
+    SlidingWindow *priv = ctx->priv;
     // TODO block signals in priv thread
     while (!priv->order_hangup) {
+        if (render_sigwinch_caught()) {
+            // Layout is fixed and top-left anchored, so a resize never
+            // requires re-layout: just stop painting while the terminal is
+            // smaller than the fixed geometry (writes into a smaller tty
+            // would wrap and garble the screen).
+            struct winsize ws;
+            priv->layout_ok = !ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws)
+                && ws.ws_row >= RENDER_ROWS && ws.ws_col >= RENDER_COLS;
+        }
         render_queued(priv);
         usleep(40000);  // 25 Hz should be nice
     }
@@ -107,14 +126,11 @@ static void *render_thread_proc(void *arg) {
 }
 
 static void render_update_vis(SlidingWindow *priv, blk_report_t *rep) {
+    // Counting continues even when the layout is torn down (terminal too
+    // small); only the drawing pauses.
     if (rep->report.blk_status)
-    {
-        print_vis(priv->vis, error_vis[rep->report.blk_status]);
         priv->error_stats_accum[rep->report.blk_status]++;
-    }
-    else
-    {
-        print_vis(priv->vis, choose_vis(rep->report.blk_access_time));
+    else {
         unsigned int i;
         for (i = 0; i < 5; i++)
             if (rep->report.blk_access_time < bs_vis[i].access_time) {
@@ -124,10 +140,18 @@ static void render_update_vis(SlidingWindow *priv, blk_report_t *rep) {
         if (i == 5)
             priv->access_time_stats_accum[5]++; // of exceed
     }
+    if (!priv->layout_ok)
+        return;
+    if (rep->report.blk_status)
+        print_vis(priv->vis, error_vis[rep->report.blk_status]);
+    else
+        print_vis(priv->vis, choose_vis(rep->report.blk_access_time));
     wnoutrefresh(priv->vis);
 }
 
 static void render_update_stats(SlidingWindow *priv) {
+    if (!priv->layout_ok)
+        return;
     werase(priv->access_time_stats);
     unsigned int i;
     for (i = 0; i < 6; i++)
@@ -194,7 +218,10 @@ static int Open(DC_RendererCtx *ctx) {
     SlidingWindow *priv = ctx->priv;
     DC_ProcedureCtx *actctx = ctx->procedure_ctx;
 
-    if (require_terminal_size(25, 80))
+    /* The layout is fixed, sized for a 1024x768 screen (see RENDER_*), and
+     * anchored to the top-left corner; it never adapts to LINES/COLS, so a
+     * terminal resize cannot garble it. */
+    if (require_terminal_size(RENDER_ROWS, RENDER_COLS))
         return -1;
 
 #define LBA_WIDTH 20
@@ -202,43 +229,44 @@ static int Open(DC_RendererCtx *ctx) {
 #define LEGEND_HEIGHT 12
 #define LEGEND_VERT_OFFSET 3 /* ETA & SPEED are above, 1 for spacing */
 
-    priv->w_cur_lba = derwin(stdscr, 1, LBA_WIDTH, 0 /* at the top */, COLS - LEGEND_WIDTH - 1 - (LBA_WIDTH * 2) );
+    priv->w_cur_lba = derwin(stdscr, 1, LBA_WIDTH, 0 /* at the top */, RENDER_COLS - LEGEND_WIDTH - 1 - (LBA_WIDTH * 2) );
     assert(priv->w_cur_lba);
     wbkgd(priv->w_cur_lba, COLOR_PAIR(MY_COLOR_GRAY));
 
-    priv->w_end_lba = derwin(stdscr, 1, LBA_WIDTH, 0 /* at the top */, COLS - LEGEND_WIDTH - 1 - LBA_WIDTH);
+    priv->w_end_lba = derwin(stdscr, 1, LBA_WIDTH, 0 /* at the top */, RENDER_COLS - LEGEND_WIDTH - 1 - LBA_WIDTH);
     assert(priv->w_end_lba);
     wbkgd(priv->w_end_lba, COLOR_PAIR(MY_COLOR_GRAY));
 
-    priv->eta = derwin(stdscr, 1, LEGEND_WIDTH, 0 /* at the top */, COLS-LEGEND_WIDTH);
+    priv->eta = derwin(stdscr, 1, LEGEND_WIDTH, 0 /* at the top */, RENDER_COLS-LEGEND_WIDTH);
     assert(priv->eta);
     wbkgd(priv->eta, COLOR_PAIR(MY_COLOR_GRAY));
 
-    priv->avg_speed = derwin(stdscr, 1, LEGEND_WIDTH, 1 /* ETA is above */, COLS-LEGEND_WIDTH);
+    priv->avg_speed = derwin(stdscr, 1, LEGEND_WIDTH, 1 /* ETA is above */, RENDER_COLS-LEGEND_WIDTH);
     assert(priv->avg_speed);
     wbkgd(priv->avg_speed, COLOR_PAIR(MY_COLOR_GRAY));
 
-    priv->legend = derwin(stdscr, LEGEND_HEIGHT, LEGEND_WIDTH/2, LEGEND_VERT_OFFSET, COLS-LEGEND_WIDTH);
+    priv->legend = derwin(stdscr, LEGEND_HEIGHT, LEGEND_WIDTH/2, LEGEND_VERT_OFFSET, RENDER_COLS-LEGEND_WIDTH);
     assert(priv->legend);
     wbkgd(priv->legend, COLOR_PAIR(MY_COLOR_GRAY));
 
-    priv->access_time_stats = derwin(stdscr, LEGEND_HEIGHT, LEGEND_WIDTH/2, LEGEND_VERT_OFFSET, COLS-LEGEND_WIDTH/2);
+    priv->access_time_stats = derwin(stdscr, LEGEND_HEIGHT, LEGEND_WIDTH/2, LEGEND_VERT_OFFSET, RENDER_COLS-LEGEND_WIDTH/2);
     assert(priv->access_time_stats);
     wbkgd(priv->access_time_stats, COLOR_PAIR(MY_COLOR_GRAY));
     show_legend(priv->legend);
 
 #define SUMMARY_VERT_OFFSET ( 1 /* ETA */ + 1 + /* SPEED */ + 1 /* spacing */ + LEGEND_HEIGHT + 1 /* spacing */ )
-#define SUMMARY_HEIGHT ( LINES - SUMMARY_VERT_OFFSET - 1 /* don't touch bottom line */ )
-    priv->summary = derwin(stdscr, SUMMARY_HEIGHT, LEGEND_WIDTH, SUMMARY_VERT_OFFSET, COLS-LEGEND_WIDTH);
+#define SUMMARY_HEIGHT ( RENDER_ROWS - SUMMARY_VERT_OFFSET - 1 /* don't touch the fixed area's bottom line */ )
+    priv->summary = derwin(stdscr, SUMMARY_HEIGHT, LEGEND_WIDTH, SUMMARY_VERT_OFFSET, RENDER_COLS-LEGEND_WIDTH);
     assert(priv->summary);
     wbkgd(priv->summary, COLOR_PAIR(MY_COLOR_GRAY));
 
-    priv->vis = derwin(stdscr, LINES-2 /* version is below, LBA is above */, COLS-LEGEND_WIDTH-1, 1 /* LBA is above */, 0);
+    priv->vis = derwin(stdscr, RENDER_ROWS-2 /* version is below, LBA is above */, RENDER_COLS-LEGEND_WIDTH-1, 1 /* LBA is above */, 0);
     assert(priv->vis);
     scrollok(priv->vis, TRUE);
     wrefresh(priv->vis);
 
     priv->reports[0].seqno = 1; // anything but zero
+    priv->layout_ok = 1;
 
     char comma_lba_buf[30], *comma_lba_p;
     comma_lba_p = commaprint(actctx->dev->capacity / 512, comma_lba_buf, sizeof(comma_lba_buf));
@@ -254,7 +282,7 @@ static int Open(DC_RendererCtx *ctx) {
             actctx->dev->serial_no ? actctx->dev->serial_no : "unknown serial",
             actctx->blk_size);
     wrefresh(priv->summary);
-    int r = pthread_create(&priv->render_thread, NULL, render_thread_proc, priv);
+    int r = pthread_create(&priv->render_thread, NULL, render_thread_proc, ctx);
     if (r)
         return r; // FIXME leak
     return 0;

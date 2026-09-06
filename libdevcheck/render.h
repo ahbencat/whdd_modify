@@ -29,4 +29,12 @@ DC_Renderer *dc_find_renderer(char *name);
 
 int render_procedure(DC_ProcedureCtx *actctx, DC_Renderer *renderer);
 
+/* SIGWINCH support: render_procedure() installs the handler for the duration
+ * of a rendering session. Renderers poll render_sigwinch_caught() from their
+ * display thread and pause drawing while the terminal is smaller than their
+ * fixed layout. */
+void render_sigwinch_install(void);
+void render_sigwinch_restore(void);
+int render_sigwinch_caught(void);
+
 #endif // RENDER_H
