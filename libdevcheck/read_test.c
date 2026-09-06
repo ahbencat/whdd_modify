@@ -43,7 +43,7 @@ struct read_priv {
     struct dg_interval {
         int64_t begin_lba;
         int64_t end_lba;  // LBA of last sector of the range, inclusive
-        int type;  // 1 = severe (slow, >500ms), 2 = damaged (read error)
+        int type;  // 1 = severe (red), 2 = damaged (read error), 3 = slow (light red)
     } *dg_intervals;
     int nb_dg_intervals;
     int64_t dg_cur_begin;
@@ -74,8 +74,10 @@ static char *make_default_report_basename(DC_Dev *dev, time_t now) {
 }
 
 // Contiguity-checked interval bookkeeping for the defect-list report.
-// Slow-but-OK blocks (>500ms) are "severe", read errors are "damaged";
-// damaged wins when a block is both.
+// Read errors are "damaged"; OK blocks at or above the top threshold are
+// "severe" (red); OK blocks in the light-red tier (between the 4th and the
+// top threshold, e.g. 150..500 ms at the 256-sector base) are "slow".
+// Damaged wins over everything when classifying a block.
 static void dg_interval_update(ReadPriv *priv, int64_t lba, int64_t end_lba, int type) {
     if (type) {
         if ((priv->dg_cur_type == type) && (lba == priv->dg_cur_end + 1)) {
@@ -263,7 +265,9 @@ static int Perform(DC_ProcedureCtx *ctx) {
         if (ctx->report.blk_status)
             dg_type = 2;  // damaged
         else if (ctx->report.blk_access_time >= priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 1])
-            dg_type = 1;  // severe
+            dg_type = 1;  // severe (red)
+        else if (ctx->report.blk_access_time >= priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 2])
+            dg_type = 3;  // slow (light red tier)
         dg_interval_update(priv, ctx->report.lba, block_end_lba, dg_type);
     }
     if (ctx->report.blk_status) {
@@ -345,6 +349,15 @@ static void write_report(DC_ProcedureCtx *ctx) {
     fclose(f);
 }
 
+static const char *dg_type_name(int type) {
+    switch (type) {
+        case 1: return "severe";
+        case 2: return "damaged";
+        case 3: return "slow";
+    }
+    return "?";
+}
+
 static void write_dg_report(DC_ProcedureCtx *ctx) {
     ReadPriv *priv = ctx->priv;
     FILE *f;
@@ -364,11 +377,13 @@ static void write_dg_report(DC_ProcedureCtx *ctx) {
     fprintf(f, "WHDD read test defect list (DiskGenius-style)\n");
     {
         int i;
-        uint64_t severe_count = 0, damaged_count = 0;
+        uint64_t severe_count = 0, slow_count = 0, damaged_count = 0;
         for (i = 0; i < priv->nb_dg_intervals; i++) {
             uint64_t sectors = priv->dg_intervals[i].end_lba - priv->dg_intervals[i].begin_lba + 1;
             if (priv->dg_intervals[i].type == 1)
                 severe_count += sectors;
+            else if (priv->dg_intervals[i].type == 3)
+                slow_count += sectors;
             else
                 damaged_count += sectors;
         }
@@ -379,15 +394,18 @@ static void write_dg_report(DC_ProcedureCtx *ctx) {
         fprintf(f, "Scanned range: LBA %" PRId64 " .. %" PRId64 "\n",
                 priv->start_lba, priv->end_lba - 1);
         fprintf(f, "\n");
-        fprintf(f, "Severe (slow blocks, >=%" PRIu64 "ms): %" PRIu64 " sectors\n",
-                priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 1] / 1000, severe_count);
         fprintf(f, "Damaged (read errors): %" PRIu64 " sectors\n", damaged_count);
+        fprintf(f, "Severe (red, >=%" PRIu64 "ms): %" PRIu64 " sectors\n",
+                priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 1] / 1000, severe_count);
+        fprintf(f, "Slow (light red, %" PRIu64 "..%" PRIu64 " ms): %" PRIu64 " sectors\n",
+                priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 2] / 1000,
+                priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 1] / 1000, slow_count);
         fprintf(f, "\n");
         fprintf(f, "Type     LBA begin       LBA end         Sectors\n");
         for (i = 0; i < priv->nb_dg_intervals; i++) {
             uint64_t sectors = priv->dg_intervals[i].end_lba - priv->dg_intervals[i].begin_lba + 1;
             fprintf(f, "%-8s %15" PRId64 " %15" PRId64 " %13" PRIu64 "\n",
-                    priv->dg_intervals[i].type == 1 ? "severe" : "damaged",
+                    dg_type_name(priv->dg_intervals[i].type),
                     priv->dg_intervals[i].begin_lba,
                     priv->dg_intervals[i].end_lba,
                     sectors);
