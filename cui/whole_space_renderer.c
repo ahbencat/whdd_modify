@@ -265,8 +265,7 @@ static int Open(DC_RendererCtx *ctx) {
     WholeSpace *priv = ctx->priv;
     DC_ProcedureCtx *actctx = ctx->procedure_ctx;
 
-    // TODO Raise error message
-    if (LINES < 25 || COLS < 80)
+    if (require_terminal_size(25, 80))
         return -1;
 
     priv->nb_blocks = actctx->dev->capacity / actctx->blk_size;
