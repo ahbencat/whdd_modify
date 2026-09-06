@@ -376,17 +376,24 @@ static void write_dg_report(DC_ProcedureCtx *ctx) {
 
     fprintf(f, "WHDD read test defect list (DiskGenius-style)\n");
     {
-        int i;
-        uint64_t severe_count = 0, slow_count = 0, damaged_count = 0;
+        int i, t;
+        uint64_t counts[4] = {0, 0, 0, 0};  // indexed by interval type
+        char severe_title[64], slow_title[64];
+        const char *titles[4] = {NULL, NULL, "Damaged (read errors)", NULL};
+        const int type_order[3] = {2, 1, 3};  // sections: damaged, severe, slow
+
         for (i = 0; i < priv->nb_dg_intervals; i++) {
             uint64_t sectors = priv->dg_intervals[i].end_lba - priv->dg_intervals[i].begin_lba + 1;
-            if (priv->dg_intervals[i].type == 1)
-                severe_count += sectors;
-            else if (priv->dg_intervals[i].type == 3)
-                slow_count += sectors;
-            else
-                damaged_count += sectors;
+            counts[priv->dg_intervals[i].type] += sectors;
         }
+        snprintf(severe_title, sizeof(severe_title), "Severe (red, >=%" PRIu64 "ms)",
+                priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 1] / 1000);
+        snprintf(slow_title, sizeof(slow_title), "Slow (light red, %" PRIu64 "..%" PRIu64 " ms)",
+                priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 2] / 1000,
+                priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 1] / 1000);
+        titles[1] = severe_title;
+        titles[3] = slow_title;
+
         fprintf(f, "Device: %s (%s)\n", ctx->dev->dev_path,
                 ctx->dev->model_str ? ctx->dev->model_str : "unknown model");
         fprintf(f, "Serial number: %s\n",
@@ -394,23 +401,40 @@ static void write_dg_report(DC_ProcedureCtx *ctx) {
         fprintf(f, "Scanned range: LBA %" PRId64 " .. %" PRId64 "\n",
                 priv->start_lba, priv->end_lba - 1);
         fprintf(f, "\n");
-        fprintf(f, "Damaged (read errors): %" PRIu64 " sectors\n", damaged_count);
-        fprintf(f, "Severe (red, >=%" PRIu64 "ms): %" PRIu64 " sectors\n",
-                priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 1] / 1000, severe_count);
-        fprintf(f, "Slow (light red, %" PRIu64 "..%" PRIu64 " ms): %" PRIu64 " sectors\n",
-                priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 2] / 1000,
-                priv->vis_thresholds[DC_VIS_THRESHOLD_COUNT - 1] / 1000, slow_count);
+        fprintf(f, "%s: %" PRIu64 " sectors\n", titles[2], counts[2]);
+        fprintf(f, "%s: %" PRIu64 " sectors\n", titles[1], counts[1]);
+        fprintf(f, "%s: %" PRIu64 " sectors\n", titles[3], counts[3]);
         fprintf(f, "\n");
-        fprintf(f, "Type     LBA begin       LBA end         Sectors\n");
-        for (i = 0; i < priv->nb_dg_intervals; i++) {
-            uint64_t sectors = priv->dg_intervals[i].end_lba - priv->dg_intervals[i].begin_lba + 1;
-            fprintf(f, "%-8s %15" PRId64 " %15" PRId64 " %13" PRIu64 "\n",
-                    dg_type_name(priv->dg_intervals[i].type),
-                    priv->dg_intervals[i].begin_lba,
-                    priv->dg_intervals[i].end_lba,
-                    sectors);
+
+        // One section per severity, in severity order; sections with no
+        // intervals are omitted. Within a section, rows keep scan order
+        // (ascending LBA).
+        int any_section = 0;
+        for (t = 0; t < 3; t++) {
+            int type = type_order[t];
+            int nb_rows = 0;
+            for (i = 0; i < priv->nb_dg_intervals; i++)
+                if (priv->dg_intervals[i].type == type)
+                    nb_rows++;
+            if (!nb_rows)
+                continue;
+            any_section = 1;
+            fprintf(f, "%s\n", titles[type]);
+            fprintf(f, "Type     LBA begin       LBA end         Sectors\n");
+            for (i = 0; i < priv->nb_dg_intervals; i++) {
+                uint64_t sectors;
+                if (priv->dg_intervals[i].type != type)
+                    continue;
+                sectors = priv->dg_intervals[i].end_lba - priv->dg_intervals[i].begin_lba + 1;
+                fprintf(f, "%-8s %15" PRId64 " %15" PRId64 " %13" PRIu64 "\n",
+                        dg_type_name(type),
+                        priv->dg_intervals[i].begin_lba,
+                        priv->dg_intervals[i].end_lba,
+                        sectors);
+            }
+            fprintf(f, "\n");
         }
-        if (!priv->nb_dg_intervals)
+        if (!any_section)
             fprintf(f, "(no defective blocks found)\n");
     }
     fclose(f);
