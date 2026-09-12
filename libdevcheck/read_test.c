@@ -37,6 +37,7 @@ struct read_priv {
     uint64_t blocks_processed;
     uint64_t blocks_with_errors;
     uint64_t total_access_time;  // in mcs
+    time_t scan_start_time;  // recorded at Open(), end time is taken at report write
     int64_t first_error_lba;
     int64_t last_error_lba;
     // DiskGenius-style defect intervals: contiguous LBA ranges by severity
@@ -198,6 +199,8 @@ static int Open(DC_ProcedureCtx *ctx) {
     if (r == -1)
       dc_log(DC_LOG_WARNING, "Disabling block device readahead setting failed\n");
 
+    priv->scan_start_time = time(NULL);
+
     return 0;
 }
 
@@ -292,7 +295,7 @@ static void write_report(DC_ProcedureCtx *ctx) {
     FILE *f;
     time_t now;
     struct tm tm_buf;
-    char timestamp[40];
+    char timestamp[40], start_timestamp[40];
     char path[4096];
 
     snprintf(path, sizeof(path), "%s.report", priv->report_file);
@@ -305,10 +308,22 @@ static void write_report(DC_ProcedureCtx *ctx) {
     now = time(NULL);
     localtime_r(&now, &tm_buf);
     strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &tm_buf);
+    localtime_r(&priv->scan_start_time, &tm_buf);
+    strftime(start_timestamp, sizeof(start_timestamp), "%Y-%m-%d %H:%M:%S", &tm_buf);
 
     uint64_t bytes_processed = priv->blocks_processed * ctx->blk_size;
     fprintf(f, "WHDD read test report\n");
-    fprintf(f, "Time: %s\n", timestamp);
+    fprintf(f, "Scan start: %s\n", start_timestamp);
+    fprintf(f, "Scan end: %s\n", timestamp);
+    {
+        int64_t scan_seconds = (int64_t)now - (int64_t)priv->scan_start_time;
+        if (scan_seconds < 0)
+            scan_seconds = 0;
+        fprintf(f, "Scan duration: %" PRId64 ":%02d:%02d\n",
+                scan_seconds / 3600,
+                (int)(scan_seconds % 3600) / 60,
+                (int)(scan_seconds % 60));
+    }
     fprintf(f, "Device: %s (%s)\n", ctx->dev->dev_path,
             ctx->dev->model_str ? ctx->dev->model_str : "unknown model");
     fprintf(f, "Serial number: %s\n",
