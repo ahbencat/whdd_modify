@@ -33,6 +33,19 @@ intact; the changes made in this edition are described below.
   (128 KiB / 512 KiB / 2 MiB).
 - Device model and serial number are shown in the scan screen.
 
+### Quick disk diagnosis
+The procedure menu includes **Quick disk diagnosis**, a read-only fast check that:
+- reports the kernel-visible logical and physical sector sizes and classifies the device as
+  512n, 512e, native 4Kn, or custom/unknown;
+- queries native SCSI READ CAPACITY(16) protection metadata when the transport exposes it,
+  including PI enabled/disabled, P_TYPE and P_I_EXPONENT;
+- reads one logical sector at the beginning, middle and end of the device.
+
+No data is written, SMART is not enabled, and no format or remap command is issued. An
+unsupported PI query is reported as unknown rather than disabled. Successful samples are
+only a quick compatibility/readability indication, not a full-surface health test; use the
+full read test and read-only `smartctl -x`/`sg_readcap -l` checks for further diagnosis.
+
 ### Scan reports
 After a read test, two files are written automatically:
 - `WHDD_REPORT_<serial>_<YYMMDD>_<HHMMSS>.report` — summary: parameters,

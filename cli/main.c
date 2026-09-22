@@ -105,8 +105,10 @@ int main() {
             printf("Procedure init fail\n");
             continue;
         }
-        if (!act->perform)
+        if (!act->perform) {
+            dc_procedure_close(actctx);
             continue;
+        }
         printf("Performing on device %s with block size %"PRId64"\n",
                 chosen_dev->dev_path, actctx->blk_size);
         procedure_perform_until_interrupt(actctx, proc_render_cb, NULL);

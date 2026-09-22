@@ -31,6 +31,8 @@ set(LIBDEVCHECK_SRCS
     libdevcheck/posix_write_zeros.c
     libdevcheck/log.c
     libdevcheck/ata.c
+    libdevcheck/blk_probe.c
+    libdevcheck/quick_diagnosis.c
     libdevcheck/scsi.c
     libdevcheck/copy.c
     libdevcheck/copy_read_strategies.c

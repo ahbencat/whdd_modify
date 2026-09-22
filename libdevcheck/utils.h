@@ -56,4 +56,11 @@ void dc_get_vis_thresholds(int sectors_at_once, uint64_t out[DC_VIS_THRESHOLD_CO
 
 /* Replace anything unsafe for a filename component with '_'. */
 void dc_sanitize_for_filename(char *s);
+
+/* Read-only block-device geometry and one-shot reads. */
+int dc_dev_logical_sector_size(const char *dev_path, unsigned int *out);
+int dc_dev_physical_sector_size(const char *dev_path, unsigned int *out);
+int dc_dev_capacity_bytes(const char *dev_path, uint64_t *out);
+int dc_blk_read(DC_Dev *dev, enum Api api, uint64_t start_lba, uint64_t sectors,
+        DC_BlockReport *report, int *posix_errno, void **out_buf);
 #endif // LIBDEVCHECK_UTILS_H

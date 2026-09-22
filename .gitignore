@@ -3,4 +3,6 @@ version.h
 whdd
 whdd_g
 whdd-cli
+whdd-dd
 WHDD_REPORT_*
+temp/

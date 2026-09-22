@@ -52,6 +52,7 @@ int dc_init(void) {
     PROCEDURE_REGISTER(copy);
     PROCEDURE_REGISTER(read_test);
     PROCEDURE_REGISTER(smart_show);
+    PROCEDURE_REGISTER(quick_diagnosis);
 #undef PROCEDURE_REGISTER
     return 0;
 }

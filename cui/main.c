@@ -179,8 +179,10 @@ int main() {
             dialog_msgbox("Error", "Procedure init fail", 0, 0, 1);
             continue;
         }
-        if (!act->perform)
+        if (!act->perform) {
+            dc_procedure_close(actctx);
             continue;
+        }
         DC_Renderer *renderer;
         if (!strcmp(act->name, "copy"))
             renderer = dc_find_renderer("whole_space");

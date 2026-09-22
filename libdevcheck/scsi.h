@@ -38,6 +38,19 @@ typedef struct scsi_ata_return_descriptor {
     uint64_t lba;
 } ScsiAtaReturnDescriptor;
 
+typedef struct dc_scsi_capacity16 {
+    uint64_t last_lba;
+    uint32_t block_length;
+    unsigned int prot_en;
+    unsigned int p_type;
+    unsigned int p_i_exponent;
+} DC_ScsiCapacity16;
+
+/* Query native SCSI READ CAPACITY(16), including T10 PI fields.
+ * Returns 0 on success; returns -1 with errno set when the transport does
+ * not support the command or the command fails. */
+int dc_scsi_read_capacity16(const char *dev_path, DC_ScsiCapacity16 *out);
+
 void prepare_scsi_command_from_ata(ScsiCommand *scsi_cmd, AtaCommand *ata_cmd);
 
 void fill_scsi_ata_return_descriptor(ScsiAtaReturnDescriptor *scsi_ata_ret, ScsiCommand *scsi_cmd);
