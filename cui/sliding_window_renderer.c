@@ -12,6 +12,8 @@
 #include "procedure.h"
 #include "vis.h"
 
+extern int64_t dc_read_test_get_end_lba(DC_ProcedureCtx *ctx);
+
 typedef struct blk_report {
     uint64_t seqno;
     DC_BlockReport report;
@@ -36,6 +38,8 @@ typedef struct {
     uint64_t avg_processing_speed;
     uint64_t eta_time; // estimated time
     uint64_t cur_lba;
+    uint64_t end_lba;
+    uint64_t progress_percent;
 
     pthread_t render_thread;
     int order_hangup; // if interrupted or completed, render remainings and end render thread
@@ -175,6 +179,12 @@ static void render_update_stats(SlidingWindow *priv) {
         wnoutrefresh(priv->eta);
     }
 
+    werase(priv->w_end_lba);
+    char end_lba_buf[30], *end_lba_p;
+    end_lba_p = commaprint(priv->end_lba, end_lba_buf, sizeof(end_lba_buf));
+    wprintw(priv->w_end_lba, "/ %s %3"PRIu64"%%", end_lba_p, priv->progress_percent);
+    wnoutrefresh(priv->w_end_lba);
+
     werase(priv->w_cur_lba);
     char comma_lba_buf[30], *comma_lba_p;
     comma_lba_p = commaprint(priv->cur_lba, comma_lba_buf, sizeof(comma_lba_buf));
@@ -187,7 +197,7 @@ static void render_update_stats(SlidingWindow *priv) {
 
                                                              <--LEGEND_WIDTH=20->
 +--------------------------------------------------------------------------------+
-|                   LBA:       xxx,xxx / xxx,xxx,xxx         ETA           xx:xx |
+|                   LBA:       xxx,xxx / xxx,xxx,xxx xx%   ETA           xx:xx |
 |xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx SPEED    xxxxx kb/s |
 |xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                     |
 |xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx x <3ms     xxxx     |^
@@ -268,8 +278,9 @@ static int Open(DC_RendererCtx *ctx) {
     priv->reports[0].seqno = 1; // anything but zero
     priv->layout_ok = 1;
 
+    priv->end_lba = dc_read_test_get_end_lba(actctx);
     char comma_lba_buf[30], *comma_lba_p;
-    comma_lba_p = commaprint(actctx->dev->capacity / 512, comma_lba_buf, sizeof(comma_lba_buf));
+    comma_lba_p = commaprint(priv->end_lba, comma_lba_buf, sizeof(comma_lba_buf));
     wprintw(priv->w_end_lba, "/ %s", comma_lba_p);
     wnoutrefresh(priv->w_end_lba);
     wprintw(priv->summary,
@@ -295,6 +306,9 @@ static int HandleReport(DC_RendererCtx *ctx) {
 
     priv->bytes_processed += actctx->report.sectors_processed * 512;
     priv->cur_lba = actctx->report.lba + actctx->report.sectors_processed;
+    priv->progress_percent = actctx->progress.den
+        ? actctx->progress.num * 100 / actctx->progress.den
+        : 0;
 
     if (actctx->progress.num == 1) {  // TODO fix priv hack
         r = clock_gettime(DC_BEST_CLOCK, &priv->start_time);

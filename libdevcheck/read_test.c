@@ -124,6 +124,11 @@ static int SuggestDefaultValue(DC_Dev *dev, DC_OptionSetting *setting) {
             setting->value = strdup("posix");
     } else if (!strcmp(setting->name, "start_lba")) {
         setting->value = strdup("0");
+    } else if (!strcmp(setting->name, "end_lba")) {
+        char *string;
+        int r = asprintf(&string, "%"PRId64, dev->capacity / 512);
+        assert(r != -1);
+        setting->value = string;
     } else if (!strcmp(setting->name, "sectors_at_once")) {
         char *string;
         int r = asprintf(&string, "%d", DEFAULT_SECTORS_AT_ONCE);
@@ -164,7 +169,10 @@ static int Open(DC_ProcedureCtx *ctx) {
     }
     ctx->blk_size = priv->sectors_at_once * 512;
     priv->current_lba = priv->start_lba;
-    priv->end_lba = ctx->dev->capacity / 512;
+    if (priv->end_lba <= priv->start_lba)
+        return 1;
+    if (priv->end_lba > ctx->dev->capacity / 512)
+        return 1;
     priv->lba_to_process = priv->end_lba - priv->start_lba;
     if (priv->lba_to_process <= 0)
         return 1;
@@ -472,6 +480,7 @@ static const char * const sectors_choices[] = {"256", "1024", "4096", NULL};
 static DC_ProcedureOption options[] = {
     { "api", "select operation API: \"posix\" for POSIX read(), \"ata\" for ATA \"READ VERIFY EXT\" command", offsetof(ReadPriv, api_str), DC_ProcedureOptionType_eString, api_choices },
     { "start_lba", "set LBA address to begin from", offsetof(ReadPriv, start_lba), DC_ProcedureOptionType_eInt64 },
+    { "end_lba", "set LBA address to end at (exclusive, one past the last sector to scan; default: end of device)", offsetof(ReadPriv, end_lba), DC_ProcedureOptionType_eInt64 },
     { "sectors_at_once", "sectors per block: 256=128KB, 1024=512KB, 4096=2MB", offsetof(ReadPriv, sectors_at_once), DC_ProcedureOptionType_eInt64, sectors_choices },
     { "report_file", "basename for the two report files (saved as <name>.report and <name>.dg). Leave empty for an auto-generated timestamped name.", offsetof(ReadPriv, report_file), DC_ProcedureOptionType_eString },
     { NULL }
@@ -481,7 +490,7 @@ static DC_ProcedureOption options[] = {
 DC_Procedure read_test = {
     .name = "read_test",
     .display_name = "Read test",
-    .help = "Verifies entire device with reading. It reads data sequentially, from given start LBA up to end. To get data from source device, it may use ATA \"READ VERIFY EXT\" command, or POSIX read() function, by user choice.",
+    .help = "Verifies device with reading. It reads data sequentially, from given start LBA up to given end LBA (exclusive). To get data from source device, it may use ATA \"READ VERIFY EXT\" command, or POSIX read() function, by user choice.",
     .suggest_default_value = SuggestDefaultValue,
     .open = Open,
     .perform = Perform,
@@ -489,4 +498,8 @@ DC_Procedure read_test = {
     .priv_data_size = sizeof(ReadPriv),
     .options = options,
 };
+
+int64_t dc_read_test_get_end_lba(DC_ProcedureCtx *ctx) {
+    return ctx && ctx->priv ? ((ReadPriv*)ctx->priv)->end_lba : 0;
+}
 
