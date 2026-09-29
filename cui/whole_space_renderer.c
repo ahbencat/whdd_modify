@@ -420,12 +420,12 @@ static int HandleReport(DC_RendererCtx *ctx) {
                 - priv->start_time.tv_sec * 1000 - priv->start_time.tv_nsec / (1000*1000);
             if (time_elapsed_ms > 0) {
                 priv->avg_processing_speed = priv->bytes_processed * 1000 / time_elapsed_ms; // Byte/s
-                // capacity / speed = total_time
-                // total_time = elapsed + eta
-                // eta = total_time - elapsed
-                // eta = capacity / speed  -  elapsed
-                priv->eta_time = actctx->dev->capacity / priv->avg_processing_speed - time_elapsed_ms / 1000;
-
+                // ETA from progress: remaining_blocks * avg_time_per_block
+                if (priv->reports_handled > 0 && actctx->progress.den > priv->reports_handled) {
+                    uint64_t avg_ms_per_block = time_elapsed_ms / priv->reports_handled;
+                    priv->eta_time = (uint64_t)(actctx->progress.den - priv->reports_handled)
+                        * avg_ms_per_block / 1000;
+                }
             }
         }
     }

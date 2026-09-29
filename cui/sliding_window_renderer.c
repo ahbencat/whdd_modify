@@ -44,6 +44,7 @@ typedef struct {
     pthread_t render_thread;
     int order_hangup; // if interrupted or completed, render remainings and end render thread
     int layout_ok;    // windows valid; 0 = terminal too small, drawing paused
+    int windows_created; // subwindows exist and can be delwin'd
 
     // lockless ringbuffer
     blk_report_t reports[100*1000];
@@ -51,7 +52,7 @@ typedef struct {
     uint64_t next_report_seqno_read;
 } SlidingWindow;
 
-
+static void layout_windows(SlidingWindow *priv, DC_ProcedureCtx *actctx);
 
 static void *render_thread_proc(void *arg);
 static void blk_rep_write_finalize(SlidingWindow *priv, blk_report_t *rep);
@@ -114,13 +115,32 @@ static void *render_thread_proc(void *arg) {
     // TODO block signals in priv thread
     while (!priv->order_hangup) {
         if (render_sigwinch_caught()) {
-            // Layout is fixed and top-left anchored, so a resize never
-            // requires re-layout: just stop painting while the terminal is
-            // smaller than the fixed geometry (writes into a smaller tty
-            // would wrap and garble the screen).
             struct winsize ws;
-            priv->layout_ok = !ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws)
+            int ok = !ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws)
                 && ws.ws_row >= RENDER_ROWS && ws.ws_col >= RENDER_COLS;
+            if (ok != priv->layout_ok) {
+                // The terminal crossed the size threshold: the derwin
+                // subwindows are stale (they point into the old stdscr
+                // memory and ncurses' internal LINES/COLS are out of sync),
+                // so tear them down and rebuild at the fixed positions.
+                if (priv->windows_created) {
+                    delwin(priv->w_cur_lba);
+                    delwin(priv->w_end_lba);
+                    delwin(priv->eta);
+                    delwin(priv->avg_speed);
+                    delwin(priv->legend);
+                    delwin(priv->access_time_stats);
+                    delwin(priv->summary);
+                    delwin(priv->vis);
+                    priv->windows_created = 0;
+                }
+                resize_term(0, 0); // sync ncurses stdscr with the real terminal
+                if (ok) {
+                    layout_windows(priv, ctx->procedure_ctx);
+                    priv->windows_created = 1;
+                }
+                priv->layout_ok = ok;
+            }
         }
         render_queued(priv);
         usleep(40000);  // 25 Hz should be nice
@@ -182,7 +202,7 @@ static void render_update_stats(SlidingWindow *priv) {
     werase(priv->w_end_lba);
     char end_lba_buf[30], *end_lba_p;
     end_lba_p = commaprint(priv->end_lba, end_lba_buf, sizeof(end_lba_buf));
-    wprintw(priv->w_end_lba, "/ %s %3"PRIu64"%%", end_lba_p, priv->progress_percent);
+    wprintw(priv->w_end_lba, "/ %s %2"PRIu64"%%", end_lba_p, priv->progress_percent);
     wnoutrefresh(priv->w_end_lba);
 
     werase(priv->w_cur_lba);
@@ -224,21 +244,17 @@ static void render_update_stats(SlidingWindow *priv) {
 | WHDD rev. X.X-X-gXXXXXXX                                                       |
 +--------------------------------------------------------------------------------+
 */
-static int Open(DC_RendererCtx *ctx) {
-    SlidingWindow *priv = ctx->priv;
-    DC_ProcedureCtx *actctx = ctx->procedure_ctx;
-
-    /* The layout is fixed, sized for a 1024x768 screen (see RENDER_*), and
-     * anchored to the top-left corner; it never adapts to LINES/COLS, so a
-     * terminal resize cannot garble it. */
-    if (require_terminal_size(RENDER_ROWS, RENDER_COLS))
-        return -1;
 
 #define LBA_WIDTH 20
 #define LEGEND_WIDTH 20
 #define LEGEND_HEIGHT 12
 #define LEGEND_VERT_OFFSET 3 /* ETA & SPEED are above, 1 for spacing */
+#define SUMMARY_VERT_OFFSET ( 1 /* ETA */ + 1 + /* SPEED */ + 1 /* spacing */ + LEGEND_HEIGHT + 1 /* spacing */ )
+#define SUMMARY_HEIGHT ( RENDER_ROWS - SUMMARY_VERT_OFFSET - 1 /* don't touch the fixed area's bottom line */ )
 
+/* Create all subwindows at their fixed positions and draw static content.
+ * Called from Open() and from the render thread after a terminal resize. */
+static void layout_windows(SlidingWindow *priv, DC_ProcedureCtx *actctx) {
     priv->w_cur_lba = derwin(stdscr, 1, LBA_WIDTH, 0 /* at the top */, RENDER_COLS - LEGEND_WIDTH - 1 - (LBA_WIDTH * 2) );
     assert(priv->w_cur_lba);
     wbkgd(priv->w_cur_lba, COLOR_PAIR(MY_COLOR_GRAY));
@@ -264,8 +280,6 @@ static int Open(DC_RendererCtx *ctx) {
     wbkgd(priv->access_time_stats, COLOR_PAIR(MY_COLOR_GRAY));
     show_legend(priv->legend);
 
-#define SUMMARY_VERT_OFFSET ( 1 /* ETA */ + 1 + /* SPEED */ + 1 /* spacing */ + LEGEND_HEIGHT + 1 /* spacing */ )
-#define SUMMARY_HEIGHT ( RENDER_ROWS - SUMMARY_VERT_OFFSET - 1 /* don't touch the fixed area's bottom line */ )
     priv->summary = derwin(stdscr, SUMMARY_HEIGHT, LEGEND_WIDTH, SUMMARY_VERT_OFFSET, RENDER_COLS-LEGEND_WIDTH);
     assert(priv->summary);
     wbkgd(priv->summary, COLOR_PAIR(MY_COLOR_GRAY));
@@ -274,9 +288,6 @@ static int Open(DC_RendererCtx *ctx) {
     assert(priv->vis);
     scrollok(priv->vis, TRUE);
     wrefresh(priv->vis);
-
-    priv->reports[0].seqno = 1; // anything but zero
-    priv->layout_ok = 1;
 
     priv->end_lba = dc_read_test_get_end_lba(actctx);
     char comma_lba_buf[30], *comma_lba_p;
@@ -293,6 +304,24 @@ static int Open(DC_RendererCtx *ctx) {
             actctx->dev->serial_no ? actctx->dev->serial_no : "unknown serial",
             actctx->blk_size);
     wrefresh(priv->summary);
+}
+
+static int Open(DC_RendererCtx *ctx) {
+    SlidingWindow *priv = ctx->priv;
+    DC_ProcedureCtx *actctx = ctx->procedure_ctx;
+
+    /* The layout is fixed, sized for a 1024x768 screen (see RENDER_*), and
+     * anchored to the top-left corner; it never adapts to LINES/COLS, so a
+     * terminal resize cannot garble it. */
+    if (require_terminal_size(RENDER_ROWS, RENDER_COLS))
+        return -1;
+
+    layout_windows(priv, actctx);
+    priv->windows_created = 1;
+
+    priv->reports[0].seqno = 1; // anything but zero
+    priv->layout_ok = 1;
+
     int r = pthread_create(&priv->render_thread, NULL, render_thread_proc, ctx);
     if (r)
         return r; // FIXME leak
@@ -322,12 +351,12 @@ static int HandleReport(DC_RendererCtx *ctx) {
                 - priv->start_time.tv_sec * 1000 - priv->start_time.tv_nsec / (1000*1000);
             if (time_elapsed_ms > 0) {
                 priv->avg_processing_speed = priv->bytes_processed * 1000 / time_elapsed_ms; // Byte/s
-                // capacity / speed = total_time
-                // total_time = elapsed + eta
-                // eta = total_time - elapsed
-                // eta = capacity / speed  -  elapsed
-                priv->eta_time = actctx->dev->capacity / priv->avg_processing_speed - time_elapsed_ms / 1000;
-
+                // ETA from progress: remaining_blocks * avg_time_per_block
+                if (actctx->progress.num > 0 && actctx->progress.den > actctx->progress.num) {
+                    uint64_t avg_ms_per_block = time_elapsed_ms / actctx->progress.num;
+                    priv->eta_time = (uint64_t)(actctx->progress.den - actctx->progress.num)
+                        * avg_ms_per_block / 1000;
+                }
             }
         }
     }
@@ -356,14 +385,16 @@ static void Close(DC_RendererCtx *ctx) {
     beep();
     while (getchar() != 'm')
         ;
-    delwin(priv->legend);
-    delwin(priv->access_time_stats);
-    delwin(priv->vis);
-    delwin(priv->avg_speed);
-    delwin(priv->eta);
-    delwin(priv->summary);
-    delwin(priv->w_end_lba);
-    delwin(priv->w_cur_lba);
+    if (priv->windows_created) {
+        delwin(priv->legend);
+        delwin(priv->access_time_stats);
+        delwin(priv->vis);
+        delwin(priv->avg_speed);
+        delwin(priv->eta);
+        delwin(priv->summary);
+        delwin(priv->w_end_lba);
+        delwin(priv->w_cur_lba);
+    }
     clear_body();
 }
 

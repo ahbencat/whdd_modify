@@ -47,10 +47,10 @@ only a quick compatibility/readability indication, not a full-surface health tes
 full read test and read-only `smartctl -x`/`sg_readcap -l` checks for further diagnosis.
 
 ### Scan reports
-After a read test, two files are written automatically:
-- `WHDD_REPORT_<serial>_<YYMMDD>_<HHMMSS>.report` — summary: parameters,
+After a read test, a directory is created automatically:
+- `WHDD_REPORT_<serial>_<YYMMDD>_<HHMMSS>/WHDD_BEnzVersion.report` — summary: parameters,
   speed, access-time histogram, error type counts and the error LBA range.
-- `WHDD_REPORT_<serial>_<YYMMDD>_<HHMMSS>.dg` — DiskGenius-style defect
+- `WHDD_REPORT_<serial>_<YYMMDD>_<HHMMSS>/WHDD_BEnzVersion.dg` — DiskGenius-style defect
   list grouped by severity: `damaged` (read errors), `severe` (red,
   >= 500 ms) and `slow` (light red, 150..500 ms), each listed as contiguous
   LBA intervals. Thresholds scale with the block size.

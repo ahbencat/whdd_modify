@@ -55,8 +55,8 @@ typedef struct read_priv ReadPriv;
 
 #define DEFAULT_SECTORS_AT_ONCE 256
 
-/* Build the default report basename:
- *   WHDD_REPORT_<serial>_<YYMMDD>_<HHMMSS>
+/* Build the default report directory name:
+ *   WHDD_REPORT_<serial>_<YYMMDD>_<HHMMSS>/
  * Serial is device-supplied data, so it is sanitized; result is malloc'd. */
 static char *make_default_report_basename(DC_Dev *dev, time_t now) {
     struct tm tm_buf;
@@ -306,7 +306,11 @@ static void write_report(DC_ProcedureCtx *ctx) {
     char timestamp[40], start_timestamp[40];
     char path[4096];
 
-    snprintf(path, sizeof(path), "%s.report", priv->report_file);
+    if (mkdir(priv->report_file, 0755) < 0 && errno != EEXIST) {
+        dc_log(DC_LOG_ERROR, "Cannot create report directory '%s'", priv->report_file);
+        return;
+    }
+    snprintf(path, sizeof(path), "%s/WHDD_BEnzVersion.report", priv->report_file);
     f = fopen(path, "w");
     if (!f) {
         dc_log(DC_LOG_ERROR, "Cannot open report file '%s'", path);
@@ -390,7 +394,7 @@ static void write_dg_report(DC_ProcedureCtx *ctx) {
     if (priv->dg_cur_type)
         dg_interval_update(priv, 0, -1, 0);
 
-    snprintf(path, sizeof(path), "%s.dg", priv->report_file);
+    snprintf(path, sizeof(path), "%s/WHDD_BEnzVersion.dg", priv->report_file);
     f = fopen(path, "w");
     if (!f) {
         dc_log(DC_LOG_ERROR, "Cannot open defect list file '%s'", path);
@@ -482,7 +486,7 @@ static DC_ProcedureOption options[] = {
     { "start_lba", "set LBA address to begin from", offsetof(ReadPriv, start_lba), DC_ProcedureOptionType_eInt64 },
     { "end_lba", "set LBA address to end at (exclusive, one past the last sector to scan; default: end of device)", offsetof(ReadPriv, end_lba), DC_ProcedureOptionType_eInt64 },
     { "sectors_at_once", "sectors per block: 256=128KB, 1024=512KB, 4096=2MB", offsetof(ReadPriv, sectors_at_once), DC_ProcedureOptionType_eInt64, sectors_choices },
-    { "report_file", "basename for the two report files (saved as <name>.report and <name>.dg). Leave empty for an auto-generated timestamped name.", offsetof(ReadPriv, report_file), DC_ProcedureOptionType_eString },
+    { "report_file", "directory name for the two report files (saved as <name>/WHDD_BEnzVersion.report and <name>/WHDD_BEnzVersion.dg). Leave empty for an auto-generated timestamped name.", offsetof(ReadPriv, report_file), DC_ProcedureOptionType_eString },
     { NULL }
 };
 
