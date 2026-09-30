@@ -103,8 +103,169 @@ static int ask_option_value(DC_Dev *dev, DC_Procedure *act, DC_OptionSetting *se
     return 0;
 }
 
-int main() {
+#include "version.h"
+
+static void print_version(void) {
+    printf("whdd %s\n", WHDD_VERSION);
+}
+
+static void print_usage(void) {
+    printf("Usage: whdd [OPTION]\n");
+    printf("HDD diagnostic tool (ncurses UI)\n\n");
+    printf("  --version                    print version and exit\n");
+    printf("  --list-devices               list all block devices and exit\n");
+    printf("  --quick-diagnosis <device>   quick diagnosis on device and exit\n");
+    printf("  --smart <device>             show SMART attributes and exit\n");
+    printf("  --help                       print this help and exit\n\n");
+    printf("Note: some operations (quick-diagnosis, smart) may require sudo/root\n");
+    printf("permissions to access block devices.\n");
+}
+
+static int list_devices(void) {
     int r;
+    r = dc_init();
+    if (r) {
+        fprintf(stderr, "libdevcheck init fail\n");
+        return r;
+    }
+    dc_log_set_callback(NULL, NULL);
+    DC_DevList *devlist = dc_dev_list();
+    if (!devlist) {
+        fprintf(stderr, "Cannot get device list\n");
+        return 1;
+    }
+    int n = dc_dev_list_size(devlist);
+    if (n == 0) {
+        printf("No devices found\n");
+        return 0;
+    }
+    for (int i = 0; i < n; i++) {
+        DC_Dev *dev = dc_dev_list_get_entry(devlist, i);
+        printf("%s  %s  %s  %" PRIu64 " bytes  %s\n",
+               dev->dev_fs_name,
+               dev->model_str ? dev->model_str : "unknown model",
+               dev->serial_no ? dev->serial_no : "unknown serial",
+               dev->capacity,
+               dev->mounted ? "mounted" : "unmounted");
+    }
+    dc_dev_list_free(devlist);
+    return 0;
+}
+
+static DC_Dev *find_device_by_name(const char *name) {
+    DC_DevList *devlist = dc_dev_list();
+    if (!devlist)
+        return NULL;
+    int n = dc_dev_list_size(devlist);
+    for (int i = 0; i < n; i++) {
+        DC_Dev *dev = dc_dev_list_get_entry(devlist, i);
+        if (!strcmp(dev->dev_fs_name, name) || !strcmp(dev->dev_path, name))
+            return dev;  /* devlist intentionally not freed; CLI is short-lived */
+    }
+    return NULL;
+}
+
+static int run_quick_diagnosis(const char *dev_name) {
+    int r;
+    r = dc_init();
+    if (r) {
+        fprintf(stderr, "libdevcheck init fail\n");
+        return r;
+    }
+    dc_log_set_callback(dc_log_default_func, NULL);
+    DC_Dev *dev = find_device_by_name(dev_name);
+    if (!dev) {
+        fprintf(stderr, "Device '%s' not found\n", dev_name);
+        return 1;
+    }
+    fprintf(stderr, "Quick diagnosis on %s (%s):\n", dev->dev_fs_name,
+            dev->model_str ? dev->model_str : "unknown model");
+    DC_Procedure *proc = NULL;
+    while ((proc = dc_get_next_procedure(proc))) {
+        if (!strcmp(proc->name, "quick_diagnosis"))
+            break;
+    }
+    if (!proc) {
+        fprintf(stderr, "quick_diagnosis procedure not found\n");
+        return 1;
+    }
+    DC_OptionSetting *options = calloc(1, sizeof(DC_OptionSetting));
+    DC_ProcedureCtx *ctx = NULL;
+    r = dc_procedure_open(proc, dev, &ctx, options);
+    if (r)
+        fprintf(stderr, "Procedure open failed: %d\n", r);
+    else
+        dc_procedure_close(ctx);
+    free(options);
+    return r;
+}
+
+static int run_smart(const char *dev_name) {
+    int r;
+    r = dc_init();
+    if (r) {
+        fprintf(stderr, "libdevcheck init fail\n");
+        return r;
+    }
+    dc_log_set_callback(dc_log_default_func, NULL);
+    DC_Dev *dev = find_device_by_name(dev_name);
+    if (!dev) {
+        fprintf(stderr, "Device '%s' not found\n", dev_name);
+        return 1;
+    }
+    DC_Procedure *proc = NULL;
+    while ((proc = dc_get_next_procedure(proc))) {
+        if (!strcmp(proc->name, "smart_show"))
+            break;
+    }
+    if (!proc) {
+        fprintf(stderr, "smart_show procedure not found\n");
+        return 1;
+    }
+    DC_OptionSetting *options = calloc(1, sizeof(DC_OptionSetting));
+    DC_ProcedureCtx *ctx = NULL;
+    r = dc_procedure_open(proc, dev, &ctx, options);
+    if (r)
+        fprintf(stderr, "Procedure open failed: %d\n", r);
+    else
+        dc_procedure_close(ctx);
+    free(options);
+    return r;
+}
+
+int main(int argc, char **argv) {
+    int r;
+    int i;
+    for (i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--version")) {
+            print_version();
+            return 0;
+        }
+        if (!strcmp(argv[i], "--list-devices")) {
+            return list_devices();
+        }
+        if (!strcmp(argv[i], "--quick-diagnosis")) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: --quick-diagnosis requires a device name\n");
+                return 1;
+            }
+            return run_quick_diagnosis(argv[++i]);
+        }
+        if (!strcmp(argv[i], "--smart")) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: --smart requires a device name\n");
+                return 1;
+            }
+            return run_smart(argv[++i]);
+        }
+        if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+            print_usage();
+            return 0;
+        }
+        fprintf(stderr, "Unknown option: %s\n", argv[i]);
+        print_usage();
+        return 1;
+    }
     r = global_init();
     if (r) {
         fprintf(stderr, "init fail\n");
